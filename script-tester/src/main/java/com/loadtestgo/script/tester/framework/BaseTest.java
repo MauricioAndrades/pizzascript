@@ -6,6 +6,8 @@ import com.loadtestgo.script.api.Page;
 import com.loadtestgo.script.api.TestResult;
 import com.loadtestgo.script.tester.server.TestServer;
 import com.loadtestgo.util.Http;
+import com.loadtestgo.util.IniFile;
+import com.loadtestgo.util.Settings;
 import org.junit.Rule;
 import org.junit.rules.TestName;
 import org.pmw.tinylog.Logger;
@@ -17,6 +19,7 @@ import static org.junit.Assert.*;
 
 public class BaseTest {
     static TestServer server = null;
+    static Settings settings = IniFile.settings();
 
     @Rule
     public TestName test = new TestName();
@@ -113,7 +116,7 @@ public class BaseTest {
         ArrayList<Page> pages = result.getPages();
         int requests = 0;
         for (Page page : pages) {
-            requests += page.getRequests().size();
+            requests += getNumNonFaviconRequests(page);
         }
         assert(requests > 1);
     }
@@ -124,7 +127,36 @@ public class BaseTest {
 
         ArrayList<HttpRequest> requests = pages.get(0).getRequests();
         assert(requests.size() >= 1);
-        return requests.get(0);
+        for (HttpRequest httpRequest : requests) {
+            if (!isFavIcon(httpRequest)) {
+                return httpRequest;
+            }
+        }
+        fail("http request found but it was the fav icon, which is ignored");
+        return null;
+    }
+
+    private static int getNumNonFaviconRequests(Page page) {
+        int numRequests = 0;
+        for (HttpRequest httpRequest : page.getRequests()) {
+            if (!isFavIcon(httpRequest)) {
+                numRequests++;
+            }
+        }
+        return numRequests;
+    }
+
+    private static HttpRequest getNonFaviconRequest(Page page, int i) {
+        int index = 0;
+        for (HttpRequest httpRequest : page.getRequests()) {
+            if (!isFavIcon(httpRequest)) {
+                if (index == i) {
+                    return httpRequest;
+                }
+                index++;
+            }
+        }
+        return null;
     }
 
     public static HttpRequest getRequest(int i, TestResult result) {
@@ -132,13 +164,13 @@ public class BaseTest {
         assert(pages.size() >= 1);
 
         int j = 0;
-        while (i >= pages.get(j).getRequests().size()) {
-            i -= pages.get(j).getRequests().size();
+        while (i >= getNumNonFaviconRequests(pages.get(j))) {
+            i -= getNumNonFaviconRequests(pages.get(j));
             j++;
             assert(pages.size() > j);
         }
 
-        return pages.get(j).getRequests().get(i);
+        return getNonFaviconRequest(pages.get(j), i);
     }
 
     public static void assertRequestState(HttpRequest.State state, HttpRequest request) {
@@ -176,6 +208,19 @@ public class BaseTest {
         assertEquals(path, Http.parseUrl(url).path);
     }
 
+    /**
+     * Check the first non favicon request (favicon request can really be issued at any time
+     * Linux and OSX differ in favicon request timing pretty consistently!)
+     */
+    public void assertFirstUrlPath(String expectedUrl, Page page) {
+        ArrayList<HttpRequest> requests = page.getRequests();
+        int i = 0;
+        if (isFavIcon(requests.get(i))) {
+            i++;
+        }
+        assertUrlPath(expectedUrl, requests.get(i));
+    }
+
     public void assertPagePath(TestResult result, int pageIndex, String path) {
         Page page = result.getPage(pageIndex);
         assertPagePath(page, path);
@@ -189,5 +234,9 @@ public class BaseTest {
         assertEquals(HttpRequest.State.Complete, request.getState());
         assertEquals("OK", request.getStatusText());
         assertEquals(200, request.getStatusCode());
+    }
+
+    static public long getDefaultScriptTimeout() {
+        return settings.getLong("test.timeout", 20000);
     }
 }

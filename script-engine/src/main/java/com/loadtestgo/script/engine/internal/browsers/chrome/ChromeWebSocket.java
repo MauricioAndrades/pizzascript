@@ -236,18 +236,27 @@ public class ChromeWebSocket extends BrowserWebSocket {
             }
 
             for (HttpRequest request : page.getRequests()) {
-                HttpRequest.State state = request.getState();
-                if (request.isWebSocket()) {
-                    // Once a websocket connection is established don't wait on it,
-                    // it may be kept open for the lifetime of the page.
-                    if (state != HttpRequest.State.Recv &&
-                        state != HttpRequest.State.Complete) {
-                        return true;
-                    }
-                } else {
-                    if (state != HttpRequest.State.Complete) {
-                        return true;
-                    }
+                if (checkIsRequestPending(request)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public boolean checkIsRequestPending(HttpRequest httpRequest) {
+        synchronized (testResult) {
+            HttpRequest.State state = httpRequest.getState();
+            if (httpRequest.isWebSocket()) {
+                // Once a websocket connection is established don't wait on it,
+                // it may be kept open for the lifetime of the page.
+                if (state != HttpRequest.State.Recv &&
+                    state != HttpRequest.State.Complete) {
+                    return true;
+                }
+            } else {
+                if (state != HttpRequest.State.Complete) {
+                    return true;
                 }
             }
         }
@@ -405,17 +414,17 @@ public class ChromeWebSocket extends BrowserWebSocket {
         int processId;
         int tabId;
         int frameId;
-        int requestId;
+        String requestId;
 
         RequestInfo() {
             this.processId = -1;
             this.tabId = -1;
             this.frameId = -1;
-            this.requestId = -1;
+            this.requestId = null;
         }
 
         String getRequestId() {
-            return String.format("%d:%d:%d", processId, tabId, requestId);
+            return String.format("%d:%s", tabId, requestId);
         }
     }
 
@@ -439,8 +448,7 @@ public class ChromeWebSocket extends BrowserWebSocket {
         int dotPos = longRequestId.indexOf(".");
         if (dotPos > 0) {
             String processId = longRequestId.substring(0, dotPos);
-            String requestId = longRequestId.substring(dotPos + 1, longRequestId.length());
-            requestInfo.requestId = Integer.valueOf(requestId);
+            requestInfo.requestId = longRequestId;
             requestInfo.processId = Integer.valueOf(processId);
         } else {
             Logger.error("Unable to parse requestId {}", longRequestId);
@@ -1108,24 +1116,26 @@ public class ChromeWebSocket extends BrowserWebSocket {
     }
 
     private void navigationDOMContentLoaded(JSONObject details) throws JSONException {
-        Page page = getPageForFrame(details);
-        if (page == null) {
-            return;
-        }
+        synchronized(testResult) {
+            Page page = getPageForFrame(details);
+            if (page == null) {
+                return;
+            }
 
-        if (details.getInt("frameId") != page.getFrameId()) {
-            return;
-        }
+            if (details.getInt("frameId") != page.getFrameId()) {
+                return;
+            }
 
-        page.setDomContentLoadedTime(convertToDateFromMillis(details.getDouble("timeStamp")));
-        page.setState(Page.State.DOMContentLoaded);
+            page.setDomContentLoadedTime(convertToDateFromMillis(details.getDouble("timeStamp")));
+            page.setState(Page.State.DOMContentLoaded);
+        }
     }
 
     private void navigationCompleted(JSONObject details) throws JSONException {
-        Page page = null;
-        Page match = null;
-        FrameInfo frameInfo = getNavFrameInfo(details);
         synchronized(testResult) {
+            Page page = null;
+            Page match = null;
+            FrameInfo frameInfo = getNavFrameInfo(details);
             String url = details.getString("url");
             for (int i = getPages().size() - 1; i >= 0; --i) {
                 page = getPages().get(i);
@@ -1140,16 +1150,16 @@ public class ChromeWebSocket extends BrowserWebSocket {
                     }
                 }
             }
+
+            page = match;
+
+            if (page == null) {
+                return;
+            }
+
+            page.setNavEndTime(convertToDateFromMillis(details.getDouble("timeStamp")));
+            setPageStateAndNotify(page, Page.State.NavigationCompleted);
         }
-
-        page = match;
-
-        if (page == null) {
-            return;
-        }
-
-        page.setNavEndTime(convertToDateFromMillis(details.getDouble("timeStamp")));
-        setPageStateAndNotify(page, Page.State.NavigationCompleted);
     }
 
     private void navigationError(JSONObject details) throws JSONException {
@@ -1324,8 +1334,8 @@ public class ChromeWebSocket extends BrowserWebSocket {
             return;
         }
 
-        page.setNumDomElements(details.getInt("domElements"));
-        page.setNumFrames(details.getInt("frames"));
+        page.setNumDomElements(details.optInt("nodes"));
+        page.setNumFrames(details.optInt("documents"));
     }
 
     private void consoleMessagesCleared(JSONObject details) throws JSONException {
@@ -1338,7 +1348,12 @@ public class ChromeWebSocket extends BrowserWebSocket {
     private void consoleMessagesAdded(JSONObject details) throws JSONException {
         Page.ConsoleMessage msg = new Page.ConsoleMessage();
         JSONObject messageObj = details.getJSONObject("message");
-        msg.timestamp = convertToMillisFromSeconds(messageObj.getDouble("timestamp"));
+        Double timestamp = messageObj.optDouble("timestamp");
+        if (timestamp.isNaN()) {
+            msg.timestamp = System.currentTimeMillis();
+        } else {
+            msg.timestamp = convertToMillisFromSeconds(messageObj.getDouble("timestamp"));
+        }
         msg.level = messageObj.getString("level");
         msg.text = messageObj.getString("text");
         msg.url = messageObj.getString("url");

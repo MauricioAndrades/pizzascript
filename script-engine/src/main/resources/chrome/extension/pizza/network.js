@@ -29,8 +29,24 @@ pizza.main.network = function() {
         if (_suppressNextNav) {
             return;
         }
+
+        // Send the nav update first, so the navigation state for the page is updated,
+        // before the navigation is considered completed (in navigation.js)
         _ws.send(JSON.stringify({ event: "navigationCommitted", details: details}));
+
         _callListeners("onCommitted", details);
+    };
+
+    var onNavErrorOccurredCallback = function(details) {
+        if (_suppressNextNav) {
+            return;
+        }
+
+        // Send the nav update first, so the navigation state for the page is updated,
+        // before the navigation is considered completed (in navigation.js)
+        _ws.send(JSON.stringify({ event: "navigationError", details: details}));
+
+        _callListeners("onErrorOccurred", details);
     };
 
     var onNavDOMContentLoadedCallback = function(details) {
@@ -78,8 +94,9 @@ pizza.main.network = function() {
                         }
                     }));
 
-                // This is not as useful as a trace of total elements (e.g. not yet garbage collected and elements
-                // that are not part of the visible dom yet).  Devtools provides some functionality to get this.
+                // We could used the devtools' Memory.getDOMCounters() but it returns stats for the current
+                // devtools tab, not the tab that just navigated, also it counts extension pages and nodes loaded
+                // by extension pages.
                 chrome.tabs.executeScript(details.tabId,
                     { code: "document.querySelectorAll('*').length", allFrames: true, runAt: 'document_start' },
                     wait.add(function (response) {
@@ -93,11 +110,13 @@ pizza.main.network = function() {
                                 for (var i = 0; i < response.length; ++i) {
                                     numElements += response[i];
                                 }
-                                var r = { domElements: numElements, frames: response.length};
-                                r.tabId = details.tabId;
-                                r.processId = details.processId;
-                                r.frameId = details.frameId;
-                                _ws.send(JSON.stringify({ event: "calculatedPageStats", details: r }));
+                                _ws.send(JSON.stringify({ event: "calculatedPageStats", details: {
+                                    nodes: numElements,
+                                    documents: response.length,
+                                    tabId: details.tabId,
+                                    processId: details.processId,
+                                    frameId: details.frameId
+                                } }));
                             } catch (e) {
                                 console.log(e);
                             }
@@ -109,15 +128,6 @@ pizza.main.network = function() {
         } else {
             sendEvents();
         }
-    };
-
-    var onNavErrorOccurredCallback = function(details) {
-        if (_suppressNextNav) {
-            return;
-        }
-
-        _callListeners("onErrorOccurred", details);
-        _ws.send(JSON.stringify({ event: "navigationError", details: details}));
     };
 
     var onHistoryStateUpdated = function(details) {

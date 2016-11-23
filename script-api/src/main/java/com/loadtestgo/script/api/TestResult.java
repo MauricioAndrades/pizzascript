@@ -20,7 +20,7 @@ public class TestResult {
     // Total runTime including the time sleeping and spent opening the browser
     public int runTime;
     // number of milliseconds of runTime spent on overhead of opening browser
-    public int sleepTime = 0;
+    public int setupTime = 0;
     public TestError error;
     public String testName;
     public String browserName;
@@ -33,6 +33,8 @@ public class TestResult {
     public boolean hasScreenshot;
     public boolean hasVideo;
     public boolean hasPacketFile;
+
+    public ArrayList<TestResultFile> savedFiles = new ArrayList<>();
 
     public TestResult() {
     }
@@ -60,19 +62,21 @@ public class TestResult {
     }
 
     public void setRunTime(int runTime) {
-        this.runTime = runTime;
+        synchronized (this) {
+            this.runTime = runTime;
+        }
     }
 
-    public int getSleepTime() {
-        return sleepTime;
+    public int getSetupTime() {
+        return setupTime;
     }
 
-    public void setSleepTime(int sleepTime) {
-        this.sleepTime = sleepTime;
+    public void setSetupTime(int setupTime) {
+        this.setupTime = setupTime;
     }
 
-    public void addSleepTime(int sleepTime) {
-        this.sleepTime += sleepTime;
+    public void addSetupTime(int sleepTime) {
+        this.setupTime += sleepTime;
     }
 
     @JsonIgnore
@@ -187,6 +191,10 @@ public class TestResult {
     @JsonGetter("hasPacketFile")
     public boolean hasPacketFile() {
         return hasPacketFile;
+    }
+
+    public List<TestResultFile> getSavedFiles() {
+        return savedFiles;
     }
 
     static public class OutputMessage {

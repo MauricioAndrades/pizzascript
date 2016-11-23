@@ -277,16 +277,16 @@ public class JavaScriptEngine {
 
     public Object runScript(String script, String filename, long timeout) throws ScriptException {
         TestResult result = testContext.getTestResult();
+        Date startTime = new Date();
+        result.setStartTime(startTime);
 
         Timer timer = null;
         InterruptTimer interruptTimer = null;
         if (timeout > 0) {
             timer = new Timer();
-            interruptTimer = new InterruptTimer(Thread.currentThread());
-            timer.schedule(interruptTimer, timeout);
+            interruptTimer = new InterruptTimer(timer, Thread.currentThread(),
+                testContext, startTime.getTime(), timeout);
         }
-
-        result.setStartTime(new Date());
 
         try {
             return context.evaluateString(scope, script, filename, 1, null);
@@ -299,7 +299,7 @@ public class JavaScriptEngine {
             throw se;
         } finally {
             long now = System.currentTimeMillis();
-            result.setRunTime((int)(now - result.getStartTime().getTime()));
+            result.setRunTime((int) (now - result.getStartTime().getTime()));
             if (timer != null) {
                 timer.cancel();
             }

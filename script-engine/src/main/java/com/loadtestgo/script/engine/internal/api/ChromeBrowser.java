@@ -1,6 +1,7 @@
 package com.loadtestgo.script.engine.internal.api;
 
 import com.loadtestgo.script.api.*;
+import com.loadtestgo.script.engine.EngineSettings;
 import com.loadtestgo.script.engine.ScriptException;
 import com.loadtestgo.script.engine.TestContext;
 import com.loadtestgo.script.engine.UserContext;
@@ -10,6 +11,7 @@ import com.loadtestgo.script.engine.internal.browsers.chrome.ChromeWebSocket;
 import com.loadtestgo.script.engine.internal.rhino.RhinoUtils;
 import com.loadtestgo.script.engine.internal.server.BrowserWebSocketServer;
 import com.loadtestgo.util.Http;
+import com.loadtestgo.util.HttpHeader;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.mozilla.javascript.NativeArray;
@@ -17,35 +19,35 @@ import org.mozilla.javascript.NativeObject;
 import org.mozilla.javascript.regexp.NativeRegExp;
 import org.pmw.tinylog.Logger;
 
-import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Objects;
 
 public class ChromeBrowser implements Browser {
     private ChromeWebSocket pizzaHandler;
     private ChromeProcess chromeProcess;
+    private EngineSettings engineSettings;
     private TestContext testContext;
     private boolean ignoreHttpErrors = false;
     private ArrayList<Integer> ignoreHttpErrorCodes = null;
     private long startTime = -1;
 
-    public ChromeBrowser(TestContext testContext)
-    {
+    public ChromeBrowser(TestContext testContext) {
         init(testContext, new ChromeSettings());
     }
 
-    public ChromeBrowser(TestContext testContext, ChromeSettings settings)
-    {
+    public ChromeBrowser(TestContext testContext, ChromeSettings settings) {
         init(testContext, settings);
     }
 
-    private void init(TestContext testContext, ChromeSettings settings)
-    {
+    private void init(TestContext testContext, ChromeSettings settings) {
         this.testContext = testContext;
+        this.engineSettings = testContext.getEngineSettings();
 
         try {
-            startTime = System.currentTimeMillis();
+            testContext.startBrowserOpen();
 
             UserContext userContext = testContext.getUserContext();
 
@@ -63,7 +65,9 @@ public class ChromeBrowser implements Browser {
 
             // Start the websocket listener
             if (pizzaHandler == null) {
-                BrowserWebSocketServer webSocket = userContext.getEngineContext().getWebSocketServer();
+                BrowserWebSocketServer webSocket =
+                    userContext.getEngineContext().getWebSocketServer();
+
                 pizzaHandler = new ChromeWebSocket(testContext);
                 webSocket.initHandler(userContext.getUserId(), pizzaHandler);
             } else {
@@ -89,11 +93,7 @@ public class ChromeBrowser implements Browser {
 
             testContext.setOpenBrowser(this);
         } finally {
-            long endTime = System.currentTimeMillis();
-            TestResult testResult = testContext.getTestResult();
-            if (testResult != null) {
-                testResult.addSleepTime((int)(endTime - startTime));
-            }
+            testContext.endBrowserOpen();
         }
     }
 
@@ -102,9 +102,9 @@ public class ChromeBrowser implements Browser {
             return;
         }
 
-        int retry = settings.openBrowserRetryCount;
-        for (int i = 0; i < retry; ++i) {
-            Logger.warn("Chrome didn't start, try #{}...", i);
+        int retries =  engineSettings.getBrowserOpenRetryCount();
+        for (int i = 0; i < retries; ++i) {
+            Logger.warn("Chrome didn't start, try #{}...", i + 2);
             if (openBrowserAndWait(settings)) {
                 return;
             }
@@ -129,7 +129,6 @@ public class ChromeBrowser implements Browser {
     }
 
     private boolean startBrowserAndWaitForConnection(ChromeSettings settings) {
-
         chromeProcess = new ChromeProcess(testContext, settings);
         chromeProcess.start(testContext.getProcessLauncher());
 
@@ -936,8 +935,42 @@ public class ChromeBrowser implements Browser {
         params.put("format", format);
         params.put("quality", quality);
         checkResponseForErrors(pizzaHandler.sendCommand("screenshot", params));
-        ByteBuffer buffer = pizzaHandler.fetchScreenshot();
+        ByteBuffer buffer = pizzaHandler.getByteBuffer();
         return new Data(String.format("image/%s", format), buffer.array());
+    }
+
+    @Override
+    public Data getResponseBody(HttpRequest httpRequest) {
+        HashMap<String,Object> params = new HashMap<>();
+        params.put("requestId", httpRequest.requestId);
+
+        // Wait on the request if it is still downloading
+        while (pizzaHandler.checkIsRequestPending(httpRequest)) {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                throw new ScriptException(ErrorType.Timeout, "getResponseBody() interrupted");
+            }
+        }
+
+        JSONObject value = getResponseJson(pizzaHandler.sendCommand("getResponseBody", params));
+        String format = value.getString("format");
+        ByteBuffer buffer = pizzaHandler.getByteBuffer();
+        String contentType = findResponseHeader(httpRequest, HttpHeader.CONTENT_TYPE);
+        if (format.equals("raw")) {
+            return new Data(contentType != null ? contentType : "application/binary", buffer.array());
+        } else {
+            return new Data(contentType != null ? contentType : "text/plain", buffer.array());
+        }
+    }
+
+    private String findResponseHeader(HttpRequest httpRequest, String headerName) {
+        for (HttpHeader httpHeader : httpRequest.getResponseHeaders()) {
+            if (httpHeader.name != null && httpHeader.name.equalsIgnoreCase(headerName)) {
+                return httpHeader.value;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -983,6 +1016,18 @@ public class ChromeBrowser implements Browser {
         }
     }
 
+    private JSONObject getResponseJson(JSONObject result) {
+        try {
+            JSONObject response = result.getJSONObject("response");
+            if (response.has("error")) {
+                throw new ScriptException(ErrorType.Script, response.getString("error"));
+            }
+            return response.getJSONObject("value");
+        } catch (JSONException e) {
+            throw new ScriptException(ErrorType.Internal, "Unable to parse command response.");
+        }
+    }
+
     private Object getResponseData(JSONObject result) {
         try {
             JSONObject response = result.getJSONObject("response");
@@ -1022,5 +1067,9 @@ public class ChromeBrowser implements Browser {
         } catch (JSONException e) {
             throw new ScriptException(ErrorType.Internal, "Unable to parse command response.");
         }
+    }
+
+    public ChromeProcess getProcess() {
+        return chromeProcess;
     }
 }

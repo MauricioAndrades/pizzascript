@@ -19,8 +19,7 @@ import java.net.URL;
 import java.nio.channels.ClosedByInterruptException;
 import java.util.*;
 
-public class ChromeProcess
-{
+public class ChromeProcess {
     private UserContext userContext;
     private String profileDir;
     private String baseTmpDir;
@@ -30,6 +29,8 @@ public class ChromeProcess
     private Process process;
     private ChromeSettings settings;
     private ProcessLauncher processLauncher;
+    private EngineSettings engineSettings;
+    private EngineContext engineContext;
 
     public ChromeProcess(TestContext testContext) {
         init(testContext, new ChromeSettings());
@@ -56,6 +57,9 @@ public class ChromeProcess
         // The path to our Pizza extension (our back channel for communicating
         // directly with Chrome).
         this.pizzaExtensionPath = Path.join(extensionExpandPath, "pizza");
+
+        this.engineSettings = testContext.getEngineSettings();
+        this.engineContext = testContext.getEngineContext();
     }
 
     public void start() {
@@ -63,7 +67,7 @@ public class ChromeProcess
     }
 
     public void start(ProcessLauncher processLauncher) {
-        File executable = findChrome();
+        File executable = engineContext.getChromeExecutable();
         if (executable == null) {
             throw new ScriptException("Unable to find Chrome executable.");
         }
@@ -97,7 +101,7 @@ public class ChromeProcess
 
         // Logs also crash chrome on Windows 10 at the time of writing.
         // Seems like a bug that could happen on any OS, so disable by default.
-        if (EngineSettings.saveChromeLogs()) {
+        if (engineSettings.saveChromeLogs()) {
             // Enable logging to userdata/chrome_debug.log
             args.add("--enable-logging");
 
@@ -353,37 +357,6 @@ public class ChromeProcess
         }
     }
 
-    static public File findChrome() {
-        String fileName = EngineSettings.getChromeExecutable();
-        String fallingBack = "falling back to looking for Chrome in PATH";
-
-        if (fileName != null) {
-            File file = new File(fileName);
-            if (!file.exists()) {
-                Logger.warn("Settings location does not point to Chrome executable: {}, {}",
-                        file.getAbsolutePath(), fallingBack);
-            } else if (file.isDirectory()) {
-                Logger.warn("Settings location points to directory instead of Chrome executable: {}, {}",
-                        file.getAbsolutePath(), fallingBack);
-            } else if (!file.canExecute()) {
-                Logger.warn("Do not have execute permissions on: {}, {}", file.getAbsolutePath(), fallingBack);
-            } else {
-                // ok
-                return file;
-            }
-        } else {
-            Logger.info("Chrome location not set, {}.", fallingBack);
-        }
-
-        File file = com.loadtestgo.util.FileUtils.findExecutable(EngineSettings.getChromeFileName());
-
-        if (file != null) {
-            Logger.info("Found Chrome at {}", file.getAbsolutePath());
-        }
-
-        return file;
-    }
-
     private String getExtensionId() {
         try {
             return ChromeExtensionId.GenerateIdForPath(pizzaExtensionPath);
@@ -395,5 +368,9 @@ public class ChromeProcess
 
     public String getCacheDir() {
         return cacheDir;
+    }
+
+    public File getBrowserLogFile() {
+        return new File(getProfileDir(), "chrome_debug.log");
     }
 }

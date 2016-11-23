@@ -4,11 +4,15 @@ import com.loadtestgo.script.api.Browser;
 import com.loadtestgo.script.api.Data;
 import com.loadtestgo.script.api.TestResult;
 import com.loadtestgo.script.engine.*;
+import com.loadtestgo.script.engine.internal.api.ChromeBrowser;
+import com.loadtestgo.script.engine.internal.browsers.chrome.ChromeProcess;
 import com.loadtestgo.script.har.HarWriter;
 import com.loadtestgo.script.runner.config.TestConfig;
 import com.loadtestgo.util.FileUtils;
+import com.loadtestgo.util.IniFile;
 import com.loadtestgo.util.Path;
 import com.loadtestgo.util.Settings;
+import org.apache.commons.io.IOUtils;
 import org.pmw.tinylog.Configurator;
 import org.pmw.tinylog.Level;
 import org.pmw.tinylog.Logger;
@@ -20,17 +24,22 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
 import java.util.List;
 
 public class Worker {
     private File outputDir;
     private RunnerTestResults runnerTestResults;
+    private RunnerSettings runnerSettings;
+    private File chromeExecutable;
 
-    public Worker() {
+    public Worker(Settings settings) {
+        runnerSettings = new RunnerSettings(settings);
     }
 
-    public void init(String outputDir, RunnerTestResults runnerTestResults) {
+    public void init(String outputDir, RunnerTestResults runnerTestResults, File chromeExecutable) {
         this.runnerTestResults = runnerTestResults;
+        this.chromeExecutable = chromeExecutable;
 
         this.outputDir = new File(outputDir);
         this.outputDir.mkdirs();
@@ -39,8 +48,6 @@ public class Worker {
             .writer(new FileWriter(new File(this.outputDir, "log.txt").getAbsolutePath()))
             .level(Level.INFO)
             .activate();
-
-        Settings.loadSettings();
     }
 
     public boolean runJobs(TestConfig testConfig) {
@@ -50,6 +57,7 @@ public class Worker {
         } catch (UnknownHostException e) {
             Logger.error(e);
         }
+        engineContext.setChromeExecutable(chromeExecutable);
 
         runnerTestResults.startTests(testConfig, outputDir);
 
@@ -86,12 +94,17 @@ public class Worker {
         JavaScriptEngine engine = new JavaScriptEngine();
         ConsoleOutputWriter consoleLogWriter = null;
 
+        File outputDir = new File(this.outputDir, filename);
+        outputDir.mkdirs();
+
+        testContext.setOutputDirectory(outputDir);
+
         File consoleLogFilePath = Path.getCanonicalFile(new File(outputDir, filename + ".txt"));
         try {
             engine.init(testContext);
             try {
                 consoleLogWriter = new ConsoleOutputWriter(consoleLogFilePath);
-                consoleLogWriter.setWriteTimestamps(RunnerSettings.consoleWriteTimeStamps());
+                consoleLogWriter.setWriteTimestamps(runnerSettings.consoleWriteTimeStamps());
                 engine.setConsole(consoleLogWriter);
             } catch (IOException e) {
                 Logger.error("Unable to write output {}", consoleLogFilePath);
@@ -102,16 +115,28 @@ public class Worker {
             Browser browser = testContext.getOpenBrowser();
             try {
                 if (browser != null) {
-                    Data screenshot = browser.screenshot(RunnerSettings.screenshotType());
+                    Data screenshot = browser.screenshot(runnerSettings.screenshotType());
                     File screenshotFile = Path.getCanonicalFile(
-                        new File(outputDir, filename + "." + RunnerSettings.screenshotType()));
+                        new File(outputDir, filename + "." + runnerSettings.screenshotType()));
                     try (FileOutputStream fileOutputStream = new FileOutputStream(screenshotFile)) {
                         DataOutputStream os = new DataOutputStream(fileOutputStream);
                         os.write(screenshot.getBytes());
                         os.close();
                     }
-                    test.setScreenshotFilePath(screenshotFile.getPath());
+                    testContext.addFile(screenshotFile);
                     Logger.info("Wrote screenshot: {}", screenshotFile.getPath());
+
+                    if (testContext.getEngineSettings().saveChromeLogs()) {
+                        ChromeProcess process = ((ChromeBrowser)browser).getProcess();
+                        File browserLogFile = process.getBrowserLogFile();
+
+                        File destFile = Path.getCanonicalFile(
+                            new File(outputDir, browserLogFile.getName()));
+
+                        Files.copy(browserLogFile.toPath(), destFile.toPath());
+
+                        testContext.addFile(destFile);
+                    }
                 }
             } catch (Exception e) {
                 Logger.error("Error capturing screenshot: {}", e.getMessage());
@@ -121,7 +146,7 @@ public class Worker {
 
             if (consoleLogWriter != null) {
                 if (consoleLogWriter.outputWritten()) {
-                    test.setConsoleLogFilePath(consoleLogFilePath.getPath());
+                    testContext.addFile(consoleLogFilePath);
                 }
                 consoleLogWriter.close();
             }
@@ -131,7 +156,7 @@ public class Worker {
         File harFile = Path.getCanonicalFile(new File(outputDir, filename + ".har"));
         try {
             HarWriter.save(testResult, harFile);
-            test.setHarFilePath(harFile.getPath());
+            testContext.addFile(harFile);
         } catch (IOException e) {
             Logger.error(String.format("Unable to save har file: %s", e.getMessage()));
         }

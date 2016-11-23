@@ -127,7 +127,7 @@ public class PizzaScript {
 
         // Make sure the settings are loaded from the current directory
         // before before a Swing GUI dialog changes it
-        Settings.loadSettings();
+        IniFile.loadSettings();
 
         if (guiMode) {
             if (Os.isMac()) {
@@ -146,7 +146,7 @@ public class PizzaScript {
                 editor.openFile(fileName);
             }
         } else {
-            boolean success = true;
+            boolean success;
 
             EasyTestContext testContext = new EasyTestContext();
             JavaScriptEngine engine = new JavaScriptEngine();
